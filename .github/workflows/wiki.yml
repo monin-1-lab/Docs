@@ -1,0 +1,64 @@
+name: Публикация документации в Wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Our-team.md'
+      - 'Предстоящие-события/**'
+      - '.github/workflows/wiki.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docs-wiki
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Опубликовать статьи и оглавление
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git
+          git clone "https://github.com/$GITHUB_REPOSITORY.wiki.git" "$RUNNER_TEMP/wiki"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from shutil import copyfile
+          from urllib.parse import quote
+
+          wiki = Path(os.environ['RUNNER_TEMP']) / 'wiki'
+          base = 'https://github.com/' + os.environ['GITHUB_REPOSITORY'] + '/wiki'
+          copyfile('Our-team.md', wiki / 'Our-team.md')
+          links = [f'- [Документация]({base})', f'- [Наша команда]({base}/Our-team)']
+          folder = Path('Предстоящие-события')
+          articles = {p.stem: p for p in folder.glob('*.md')}
+          order = folder / '.order'
+          preferred = order.read_text(encoding='utf-8').splitlines() if order.exists() else []
+          if articles:
+              links.append('- Предстоящие события')
+          for slug in dict.fromkeys([*preferred, *sorted(articles)]):
+              if slug in articles:
+                  source = articles[slug]
+                  copyfile(source, wiki / source.name)
+                  title = slug.replace('-', ' ')
+                  links.append(f'  - [{title}]({base}/{quote(slug)})')
+          (wiki / '_Sidebar.md').write_text('\n'.join(links) + '\n', encoding='utf-8')
+          PY
+          cd "$RUNNER_TEMP/wiki"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- '*.md'
+          if ! git diff --cached --quiet; then
+            git commit -m "Синхронизировать документацию из Docs/main"
+            git push origin HEAD
+          fi
